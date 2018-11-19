@@ -10,12 +10,12 @@ Game ID already exists in the PS2 HDD. Will use default values of
 formats, unless flags are specified.
 
 `ps2hdd_in` allows for title retrieval by index file through use of flag `-i` and specifying the index file. The index file must be a semicolon ";" delineated .csv or .txt file.
-Each line is one entry and consists of:
-Game Title;Region Code;GameID
+Each line is one entry and consists of:  
+Game Title;Region Code;GameID  
 
-For example:
-Ape Escape 3;NTSC-U;SCUS-97501
-Ape Escape 3;PAL-Unk;SCES-53642
-...
-Armored Core - Silent Line;PAL-Unk;SLES-52203
-...
+For example:  
+Ape Escape 3;NTSC-U;SCUS-97501  
+Ape Escape 3;PAL-Unk;SCES-53642  
+...  
+Armored Core - Silent Line;PAL-Unk;SLES-52203  
+...  
