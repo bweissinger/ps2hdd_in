@@ -1,0 +1,338 @@
+#!/bin/bash
+set -e
+set -u
+set -o pipefail
+
+function display_syntax {
+  cat << EOF
+
+    SYNTAX
+      ps2hdd_in [options] [PS2 HDD] [DIRECTORY or FILE]
+      ps2hdd_in [options] [-i File] [PS2 HDD] [DIRECTORY or FILE]
+
+    EXAMPLE
+      ps2hdd_in -ni index.txt /dev/sdd .
+
+EOF
+}
+
+function display_more_info_suggestion {
+  cat << EOF
+
+    Try 'ps2hdd_in -h' for more information.
+
+EOF
+}
+
+function display_help {
+   cat << EOF
+
+    OPTIONS
+      -d
+        Prompt for dma mode. Default is *u4
+
+      -f
+        Will install image even if image with same game ID is found on PS2 HDD.
+
+      -h
+        Display help.
+
+      -i FILE
+        Use index file to lookup title of game. Any (-t) or (-l) option will be
+        ignored. For more information on the index file and formatting, look
+        under the INDEX FILE heading.
+
+      -l
+        Use volume label if present in image file. If (-t) and (-l) are both
+        used, (-l) will take precedence if a volume label is present, otherwise
+        (-t) will be used. Will be ignored if (-i) option is used.
+
+      -m
+        Will prompt for origin media. Default is CD for .cue images, and DVD
+        for all other valid image formats. Setting the proper origin format may
+        increase compatibility with PS2 HDD loaders.
+
+      -n
+        Do not prompt for confirmation.
+
+      -r
+        Recursively add all image files.
+
+      -t
+        Prompt for title, and use provided title instead of filename. Will be
+        ignored if (-i) option is used.
+
+      -u
+        Replaces underscores in title with spaces if using filename as title.
+
+    DEFAULT
+      Will install all image files in specified directory to the given PS2 HDD,
+      using the filename as the title. If a file is passed instead of directory,
+      it will install only the specified file. Will not install image if the
+      Game ID already exists in the PS2 HDD. Will use default values of
+      dma = *u4, media = cd for .cue, and dvd for .iso and all other valid image
+      formats, unless flags are specified.
+
+    INDEX FILE
+      The index file must be a semicolon ";" delineated .csv or .txt file.
+      Each line is one entry and consists of:
+      Game Title;Region Code;GameID
+
+      For example:
+      Ape Escape 3;NTSC-U;SCUS-97501
+      Ape Escape 3;PAL-Unk;SCES-53642
+      ...
+      Armored Core - Silent Line;PAL-Unk;SLES-52203
+      ...
+
+EOF
+
+  display_syntax
+}
+
+function prompt_dma {
+  echo "Select dma mode:"
+  select mode in "mdma0" "mdma1" "mdma2" "udma0" "udma1" "udma2" \
+  "udma3" "udma4"; do
+      case $mode in
+          mdma0 ) dma="*m0"; break;;
+          mdma1 ) dma="*m1"; break;;
+          mdma2 ) dma="*m2"; break;;
+          udma0 ) dma="*u0"; break;;
+          udma1 ) dma="*u1"; break;;
+          udma2 ) dma="*u2"; break;;
+          udma3 ) dma="*u3"; break;;
+          udma4 ) dma="*u4"; break;;
+      esac
+  done </dev/tty
+}
+
+function prompt_origin_media {
+  echo "Select media type:"
+  select cd in "CD" "DVD"; do
+      case $cd in
+          CD ) mediaType="CD"; break;;
+          DVD ) break;;
+      esac
+  done </dev/tty
+}
+
+function set_find_depth {
+  #Can use string to input option to find
+  maxdepth="-maxdepth 1"
+  if [ "$recursive" = true ]; then
+    maxdepth=""
+  fi
+}
+
+function get_image_info {
+  # Get image information
+  if output=$(hdl-dump cdvd_info "$image"); then
+    # Parse output
+    gameID=$(echo $output | cut -d '"' -f2)
+    volumeLabel=$(echo $output | cut -d '"' -f4)
+    size=$(echo $output | cut -d '"' -f5)
+    return 0
+  else
+    return 1
+  fi
+}
+
+function get_hdd_game_list {
+  hddGameList=$(hdl-dump hdl_toc $drive)
+}
+
+function check_index_file {
+  local extension=$(basename "$index")
+  extension="${extension##*.}"
+
+  if [ $extension != "csv" ] && [ $extension != "txt" ]; then
+    echo "Invalid index file. Must be a .csv or .txt file."
+    exit 1
+  fi
+}
+
+function get_title_from_index {
+  local formattedGameID=$(echo $gameID | tr _ -)
+  formattedGameID=$(echo $formattedGameID | tr -d .)
+
+  local tempTitle=$(awk -v id=$formattedGameID -F';' '$3 ~ id {print $1}' $index)
+  if [[ ! -z "${index// }" ]]; then
+    title=$tempTitle
+  fi
+}
+
+function set_title {
+  #Set title if non default value wanted
+  if [[ ! -z "${index// }" ]]; then
+    get_title_from_index
+  elif [ "$useVolumeLabel" = true ] && [ ! -z "${volumeLabel// }" ]; then
+    title=$volumeLabel
+  elif [ "$titlePrompt" = true ]; then
+    read </dev/tty -r -p "Enter title: " title
+  elif [ "$removeUnderscores" = true ]; then
+    title=$(echo $title | tr _ " ")
+  fi
+}
+
+function set_media_type {
+  #Set defualt media type, then determine if non default value desired
+  mediaType="DVD"
+  if [ "$mediaPrompt" = true ]; then
+    prompt_origin_media
+  elif [ "$extension" = "cue" ]; then
+    mediaType="CD"
+  fi
+}
+
+function install_image {
+  #Check if cd or dvd and install correct one
+  if [ $mediaType = "DVD" ]; then
+    hdl-dump inject_dvd $drive "$title" "$image" $gameID $dma
+  else
+    hdl-dump inject_cd $drive "$title" "$image" $gameID $dma
+  fi
+
+  #Add blank line for formatting and prettiness
+  echo ""
+}
+
+function set_dma_mode {
+  #Set default dma mode, then determine if non default value is desired
+  dma="*u4"
+  if [ "$dmaPrompt" = true ]; then
+    prompt_dma
+  fi
+}
+
+dmaPrompt=false
+force=false
+index=""
+useVolumeLabel=false
+mediaPrompt=false
+noPrompt=false
+recursive=false
+titlePrompt=false
+removeUnderscores=false
+
+#Process options
+while getopts 'dfhi:lmnrtu' OPTION; do
+  case "$OPTION" in
+    d)
+      dmaPrompt=true
+      ;;
+    f)
+      force=true
+      ;;
+    h)
+      display_help
+      exit 1
+      ;;
+    i)
+      index=$OPTARG
+      check_index_file
+      ;;
+    l)
+      useVolumeLabel=true
+      ;;
+    m)
+      mediaPrompt=true
+      ;;
+    n)
+      noPrompt=true
+      ;;
+    r)
+      recursive=true
+      ;;
+    t)
+      titlePrompt=true
+      ;;
+    u)
+      removeUnderscores=true
+      ;;
+    ?)
+      display_syntax
+      display_more_info_suggestion
+      exit 1
+      ;;
+  esac
+done
+shift "$(($OPTIND -1))"
+
+# Check if number of parameters is valid.
+if [ $# -ne 2 ]; then
+  echo "Invalid number of parameters."
+  display_syntax;
+  display_more_info_suggestion
+  exit 1
+fi
+
+#Set parameters
+drive=$1
+imageDirectory=$2
+
+#Fetch list of games installed on ps2 HDD
+get_hdd_game_list
+
+#Set $maxdepth variable to make find recursive or not
+set_find_depth
+
+#Process each image
+find -L "$imageDirectory" $maxdepth -iregex ".*\.\(iso\|cue\|nrg\|gi\|iml\)" \
+-print0 | while IFS= read -r -d '' image; do
+
+    #echo empty line just for formatting, to make it look pretty
+    echo ""
+
+    echo $image
+    if ! get_image_info; then
+      echo "Skipping."
+      continue
+    fi
+
+    # Skip if no game id found
+    if [[ -z "${gameID// }" ]]; then
+      echo "No ID found in image."
+      echo "Skipping"
+      continue
+    fi
+
+    # Skip if image file with ID is already present on ps2 HDD
+    if [[ ! -z $(echo "$hddGameList" | grep $gameID) ]]; then
+      echo "Image found on PS2 HDD."
+      if [[ "$force" = false ]]; then
+        echo "Skipping"
+        continue
+      else
+        echo "Forcing install..."
+      fi
+    fi
+
+    #Get extension and default title
+    title=$(basename "$image")
+    extension="${title##*.}"
+    title="${title%.*}"
+
+    #Set values
+    set_title
+    set_media_type
+    set_dma_mode
+
+    echo "Installing as \"$title\", \"$gameID\", \"$mediaType\", \"$dma\" \
+--$size --> $drive"
+
+    #Ask to install if (-n) option not used
+    if [ "$noPrompt" = false ]; then
+      read </dev/tty -r -p "Install? [Y/n] " response
+      if [[ $response != [yY] ]]; then
+        echo "Skipping."
+        continue
+      fi
+    fi
+
+    install_image
+
+done
+
+#Give blank line between command end and shell prompt
+echo ""
